@@ -348,6 +348,9 @@ def action_save_attachment(client: JMAPClient, email: dict, rule: dict, out_dir:
 
         blob_id = att.get("blobId")
         att_name = att.get("name") or "attachment"
+        if not blob_id:
+            print(f"  [!] Attachment '{att_name}' has no blobId, skipping")
+            continue
         ext = Path(att_name).suffix or _ext_for_mime(mime)
         label = Path(att_name).stem if len(attachments) > 1 else ""
 

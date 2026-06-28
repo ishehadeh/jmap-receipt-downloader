@@ -149,6 +149,13 @@ class TestActionSaveAttachment:
         files = list(tmp_path.rglob("*.pdf"))
         assert len(files) == 1
 
+    def test_missing_blob_id_skips_attachment(self, jmap_client, tmp_path, capsys):
+        # Attachment with no blobId — must warn and write nothing, not raise
+        email = _email(attachments=[{"name": "invoice.pdf", "type": "application/pdf", "size": 10}])
+        R.action_save_attachment(jmap_client, email, {"options": {}}, tmp_path)
+        assert "[!]" in capsys.readouterr().out
+        assert not list(tmp_path.rglob("*.*"))
+
 
 # ---------------------------------------------------------------------------
 # action_fetch_link
