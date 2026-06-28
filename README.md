@@ -1,3 +1,5 @@
+NOTE: entirely vibe coded in a day, but it more or less works for me.
+
 # Receipt Downloader
 
 Downloads purchase receipts from a Fastmail email folder via the JMAP API and saves them as PDFs, images, or text files, organized by month.
@@ -17,15 +19,17 @@ Downloads purchase receipts from a Fastmail email folder via the JMAP API and sa
 
 ## Installation
 
+
+### Docker (recommended)
+```bash
+docker compose build
+```
+
+### System
+
 ```bash
 pip install -r requirements.txt
 playwright install chromium
-```
-
-Or use Docker (Playwright is bundled in the image):
-
-```bash
-docker compose build
 ```
 
 ## Usage
@@ -99,14 +103,16 @@ rules:
 
 Tests use a real in-process HTTP server (no external services needed). Playwright tests require Chromium.
 
+### Docker (Recommended)
+
+```bash
+docker compose run --rm test
+```
+
+### System
+
 ```bash
 pip install -r requirements-dev.txt
 pytest                          # all tests except playwright
 pytest -m "not playwright"      # skip browser tests
-```
-
-Via Docker:
-
-```bash
-docker compose run --rm test
 ```
