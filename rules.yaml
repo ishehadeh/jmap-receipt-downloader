@@ -54,10 +54,9 @@ rules:
   - name: Square POS (Daily Grind, BMORE LICKS, High Grounds, Lucky Corner, etc.)
     match:
       from_domain: messaging.squareup.com
-    action: fetch_link
+    action: screenshot_link
     options:
       link_pattern: "squareup\\.com/r/"
-    # NOTE: Square emails contain a direct squareup.com/r/<token> link (no click-tracker wrapper).
     # The pattern matches that link and skips the bare squareup.com homepage link also present.
 
   # ── Toast POS receipts ────────────────────────────────────────────────────
