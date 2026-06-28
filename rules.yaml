@@ -56,9 +56,9 @@ rules:
       from_domain: messaging.squareup.com
     action: fetch_link
     options:
-      link_pattern: "squareupmessaging\\.com"
-    # NOTE: Square wraps receipt links in a.squareupmessaging.com/CL0/... click-trackers;
-    # requests follows the redirect to the public squareup.com/receipts/... page.
+      link_pattern: "squareup\\.com/r/"
+    # NOTE: Square emails contain a direct squareup.com/r/<token> link (no click-tracker wrapper).
+    # The pattern matches that link and skips the bare squareup.com homepage link also present.
 
   # ── Toast POS receipts ────────────────────────────────────────────────────
   - name: Toast POS (7th Street Burger, No Land Beyond, Ekiben, Cowboy Row, etc.)

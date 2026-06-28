@@ -233,20 +233,34 @@ def _ext_from_content(data: bytes, fallback: str) -> str:
 # Link extraction (shared by fetch_link and screenshot_link)
 # ---------------------------------------------------------------------------
 
+_BARE_URL_RE = re.compile(r'https?://[^\s<>"\']+')
+
+
 def extract_links(email: dict, pattern: str | None) -> list[str]:
+    """Extract links from both the HTML body (<a href>) and text body (bare URLs).
+    HTML body is searched first; text body fills in what HTML misses."""
     body_values = email.get("bodyValues", {})
     links = []
+    seen: set[str] = set()
+
+    def _add(href: str):
+        if href.startswith("http") and href not in seen:
+            if pattern is None or re.search(pattern, href):
+                links.append(href)
+                seen.add(href)
 
     for part in email.get("htmlBody", []):
-        part_id = part.get("partId")
-        if part_id and part_id in body_values:
-            soup = BeautifulSoup(body_values[part_id]["value"], "lxml")
+        pid = part.get("partId")
+        if pid and pid in body_values:
+            soup = BeautifulSoup(body_values[pid]["value"], "lxml")
             for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if not href.startswith("http"):
-                    continue
-                if pattern is None or re.search(pattern, href):
-                    links.append(href)
+                _add(a["href"])
+
+    for part in email.get("textBody", []):
+        pid = part.get("partId")
+        if pid and pid in body_values:
+            for m in _BARE_URL_RE.finditer(body_values[pid]["value"]):
+                _add(m.group().rstrip(".,;)"))
 
     return links
 
@@ -354,21 +368,27 @@ def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path
         return
 
     url = links[0]
-    resp = requests.get(url, timeout=30, allow_redirects=True)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(url, timeout=30, allow_redirects=True)
+        resp.raise_for_status()
 
-    ext = _ext_from_content(resp.content, _ext_for_mime(resp.headers.get("Content-Type", "")))
+        ext = _ext_from_content(resp.content, _ext_for_mime(resp.headers.get("Content-Type", "")))
 
-    if ext in (".html", ".bin") and resp.content[:15].lstrip().startswith(b"<"):
-        # HTML response — print to PDF via Playwright using the final (redirected) URL
-        final_url = resp.url
+        if ext in (".html", ".bin") and resp.content[:15].lstrip().startswith(b"<"):
+            # HTML response — print to PDF via Playwright using the final (redirected) URL
+            path = make_output_path(out_dir, email, ".pdf")
+            _url_to_pdf(resp.url, path)
+            print(f"  -> {path}  [{resp.url}]")
+        else:
+            path = make_output_path(out_dir, email, ext)
+            path.write_bytes(resp.content)
+            print(f"  -> {path}  ({len(resp.content):,} bytes)  [{url}]")
+
+    except requests.HTTPError:
+        # Server rejected the plain HTTP request (e.g. 406) — fall back to Playwright
         path = make_output_path(out_dir, email, ".pdf")
-        _url_to_pdf(final_url, path)
-        print(f"  -> {path}  [{final_url}]")
-    else:
-        path = make_output_path(out_dir, email, ext)
-        path.write_bytes(resp.content)
-        print(f"  -> {path}  ({len(resp.content):,} bytes)  [{url}]")
+        _url_to_pdf(url, path)
+        print(f"  -> {path}  [browser]  [{url}]")
 
 
 def action_screenshot_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
