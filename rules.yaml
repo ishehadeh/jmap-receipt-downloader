@@ -1,0 +1,213 @@
+# Receipt downloader rules
+# Rules are matched in order; first match wins.
+# Emails that match no rule are skipped (shown as [SKIP] in output).
+#
+# match fields (all optional, ANDed together):
+#   from:         exact sender address  (e.g. "noreply@amazon.com")
+#   from_domain:  sender domain         (e.g. "amazon.com" — matches subdomains too)
+#   from_regex:   regex on sender       (e.g. "orders@.*\\.com")
+#   subject:      substring match       (e.g. "Your receipt")
+#   subject_regex: regex on subject     (e.g. "Order #\\d+")
+#
+# action values:
+#   html             — render an email body part to PDF (default: htmlBody)
+#   text             — save an email body part as .txt (default: textBody)
+#   save_attachment  — download attached files (use mime_types to filter)
+#   fetch_link       — HTTP-GET a URL found in the email body; HTML responses are printed to PDF
+#   screenshot_link  — full-page Playwright screenshot of a URL in the email body
+#
+# options for html / text:
+#   body_part: html  — use the HTML body part (default for 'html' action)
+#   body_part: text  — use the plain-text body part (default for 'text' action)
+#                      useful when the text part is actually HTML and the html part is absent
+
+rules:
+
+  # ── Stripe-powered SaaS receipts ─────────────────────────────────────────
+  - name: Anthropic (Claude Pro)
+    match:
+      from_domain: mail.anthropic.com
+    action: fetch_link
+    options:
+      link_pattern: "stripe"
+    # NOTE: Anthropic wraps links in their ESP's click-tracker; "stripe" matches any tracker URL
+    # that has the destination encoded in it. If fetch_link returns HTML instead of a PDF,
+    # switch to screenshot_link.
+
+  - name: Bitwarden invoices
+    match:
+      from: invoice+statements@bitwarden.com
+    action: fetch_link
+    options:
+      link_pattern: "stripe"
+
+  - name: Stripe-billed vendors (Deep Infra, Obsidian, Anomaly)
+    match:
+      from_regex: "^(invoice\\+statements|receipts)\\+?[^@]*@stripe\\.com$"
+    action: fetch_link
+    options:
+      link_pattern: "email\\.stripe\\.com"
+    # NOTE: Stripe wraps PDF links in email.stripe.com/CL0/... click-trackers;
+    # requests follows the redirect to the final pay.stripe.com/... URL.
+
+  # ── Square POS receipts ───────────────────────────────────────────────────
+  - name: Square POS (Daily Grind, BMORE LICKS, High Grounds, Lucky Corner, etc.)
+    match:
+      from_domain: messaging.squareup.com
+    action: fetch_link
+    options:
+      link_pattern: "squareupmessaging\\.com"
+    # NOTE: Square wraps receipt links in a.squareupmessaging.com/CL0/... click-trackers;
+    # requests follows the redirect to the public squareup.com/receipts/... page.
+
+  # ── Toast POS receipts ────────────────────────────────────────────────────
+  - name: Toast POS (7th Street Burger, No Land Beyond, Ekiben, Cowboy Row, etc.)
+    match:
+      from_domain: toasttab.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── 7-Eleven ─────────────────────────────────────────────────────────────
+  - name: 7-Eleven store receipts
+    match:
+      from: storereceipts@7-11.com
+    action: save_attachment
+    options:
+      mime_types: [application/pdf]
+
+  # ── Uber ─────────────────────────────────────────────────────────────────
+  - name: Uber trip receipts
+    match:
+      from_domain: uber.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── Hetzner ──────────────────────────────────────────────────────────────
+  - name: Hetzner invoices
+    match:
+      from: billing@hetzner.com
+    action: save_attachment
+    options:
+      mime_types: [application/pdf]
+
+  # ── Apple ─────────────────────────────────────────────────────────────────
+  - name: Apple receipts (iCloud, App Store)
+    match:
+      from_domain: email.apple.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── Google Play ───────────────────────────────────────────────────────────
+  - name: Google Play receipts
+    match:
+      from: googleplay-noreply@google.com
+    action: html
+
+  # ── Capital One ───────────────────────────────────────────────────────────
+  - name: Capital One payment confirmations
+    match:
+      from_domain: notification.capitalone.com
+    action: html
+    # NOTE: Sparse content — amount + date only. verify HTML body has full receipt
+
+  # ── Ally Bank ─────────────────────────────────────────────────────────────
+  - name: Ally Bank transfer confirmations
+    match:
+      from_domain: transfers.ally.com
+    action: text
+
+  # ── Venmo ─────────────────────────────────────────────────────────────────
+  - name: Venmo payment notifications
+    match:
+      from: venmo@venmo.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── Cash App ─────────────────────────────────────────────────────────────
+  - name: Cash App payment notifications
+    match:
+      from: cash@square.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── Zelle via PNC ─────────────────────────────────────────────────────────
+  - name: Zelle payment alerts (PNC)
+    match:
+      from: pncalerts@pnc.com
+    action: text
+
+  # ── BGE ───────────────────────────────────────────────────────────────────
+  - name: BGE payment confirmations
+    match:
+      from: no-reply@bge.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── E-ZPass Maryland ──────────────────────────────────────────────────────
+  - name: E-ZPass Maryland replenishment charges
+    match:
+      from: donotreply@driveezmd.com
+    action: html
+    # NOTE: Receipt is inline HTML (Microsoft Reporting Services). Consider screenshot_link if too noisy.
+
+  # ── Safeway ───────────────────────────────────────────────────────────────
+  - name: Safeway grocery receipts
+    match:
+      from_domain: p.safeway.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── Whole Foods Market ────────────────────────────────────────────────────
+  - name: Whole Foods Market receipts
+    match:
+      from_domain: mail.wholefoodsmarket.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── Etsy ─────────────────────────────────────────────────────────────────
+  - name: Etsy purchase receipts
+    match:
+      from_regex: "^(transaction|no-reply)@account\\.etsy\\.com$"
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── Porkbun ──────────────────────────────────────────────────────────────
+  - name: Porkbun domain renewal invoices
+    match:
+      from: support@porkbun.com
+      subject: Auto Renewal Invoice
+    action: html
+
+  # ── Domino's ─────────────────────────────────────────────────────────────
+  - name: Domino's order confirmations
+    match:
+      from_domain: e-confirmation.dominos.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── Visible (mobile carrier) ──────────────────────────────────────────────
+  - name: Visible mobile payment receipts
+    match:
+      from_domain: mail.visible.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── GEICO ─────────────────────────────────────────────────────────────────
+  - name: GEICO auto-pay receipts
+    match:
+      from_domain: e.geico.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── RunSignup (race registrations) ────────────────────────────────────────
+  - name: RunSignup race registration confirmations
+    match:
+      from_domain: runsignup.com
+    action: html
+    # NOTE: verify HTML body has full receipt
+
+  # ── Choice Hotels ─────────────────────────────────────────────────────────
+  - name: Choice Hotels reservation confirmations
+    match:
+      from_domain: reservations.choicehotels.com
+    action: html

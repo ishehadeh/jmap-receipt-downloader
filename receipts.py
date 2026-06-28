@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""Download receipts from a Fastmail folder via JMAP."""
+
+import argparse
+import os
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import requests
+import yaml
+from bs4 import BeautifulSoup
+
+
+JMAP_SESSION_URL = "https://api.fastmail.com/jmap/session"
+JMAP_USING = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"]
+
+
+# ---------------------------------------------------------------------------
+# JMAP client
+# ---------------------------------------------------------------------------
+
+class JMAPClient:
+    def __init__(self, token: str):
+        self.token = token
+        self.account_id: str | None = None
+        self.api_url: str | None = None
+        self._download_url_template: str | None = None
+        self._http = requests.Session()
+        self._http.headers["Authorization"] = f"Bearer {token}"
+
+    def connect(self):
+        resp = self._http.get(JMAP_SESSION_URL)
+        resp.raise_for_status()
+        data = resp.json()
+        self.account_id = data["primaryAccounts"]["urn:ietf:params:jmap:mail"]
+        self.api_url = data["apiUrl"]
+        self._download_url_template = data["downloadUrl"]
+
+    def call(self, method_calls: list) -> dict:
+        payload = {"using": JMAP_USING, "methodCalls": method_calls}
+        resp = self._http.post(self.api_url, json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+    def download_blob(self, blob_id: str, name: str = "blob", mime_type: str = "application/octet-stream") -> bytes:
+        url = (self._download_url_template
+               .replace("{accountId}", self.account_id)
+               .replace("{blobId}", blob_id)
+               .replace("{name}", name)
+               .replace("{type}", mime_type))
+        resp = self._http.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+
+# ---------------------------------------------------------------------------
+# Mailbox + email fetching
+# ---------------------------------------------------------------------------
+
+def find_mailbox(client: JMAPClient, name: str) -> str:
+    result = client.call([
+        ["Mailbox/get", {"accountId": client.account_id, "ids": None}, "m0"]
+    ])
+    mailboxes = result["methodResponses"][0][1]["list"]
+    name_lower = name.lower()
+    for mb in mailboxes:
+        if mb["name"].lower() == name_lower:
+            return mb["id"]
+    available = [mb["name"] for mb in mailboxes]
+    raise ValueError(f"Mailbox '{name}' not found. Available: {available}")
+
+
+def fetch_emails(client: JMAPClient, mailbox_id: str, after: datetime, before: datetime) -> list:
+    filter_ = {
+        "inMailbox": mailbox_id,
+        "after": after.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "before": before.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+    emails = []
+    position = 0
+    limit = 50
+
+    while True:
+        result = client.call([
+            ["Email/query", {
+                "accountId": client.account_id,
+                "filter": filter_,
+                "sort": [{"property": "receivedAt", "isAscending": True}],
+                "position": position,
+                "limit": limit,
+            }, "q0"],
+            ["Email/get", {
+                "accountId": client.account_id,
+                "#ids": {"resultOf": "q0", "name": "Email/query", "path": "/ids"},
+                "properties": [
+                    "id", "subject", "from", "receivedAt",
+                    "htmlBody", "textBody", "bodyValues", "attachments",
+                ],
+                "bodyProperties": ["partId", "blobId", "size", "name", "type", "charset", "disposition"],
+                "fetchHTMLBodyValues": True,
+                "fetchTextBodyValues": True,
+                "maxBodyValueBytes": 2097152,
+            }, "g0"],
+        ])
+
+        query_resp = result["methodResponses"][0][1]
+        get_resp = result["methodResponses"][1][1]
+
+        batch = get_resp.get("list", [])
+        emails.extend(batch)
+
+        total = query_resp.get("total", 0)
+        position += len(batch)
+        if position >= total or not batch:
+            break
+
+    return emails
+
+
+# ---------------------------------------------------------------------------
+# Rule matching
+# ---------------------------------------------------------------------------
+
+def _from_addresses(email: dict) -> list[str]:
+    return [a.get("email", "").lower() for a in email.get("from", [])]
+
+
+def matches_rule(rule_match: dict, email: dict) -> bool:
+    if not rule_match:
+        return True
+
+    froms = _from_addresses(email)
+    subject = email.get("subject", "")
+
+    if "from" in rule_match:
+        target = rule_match["from"].lower()
+        if not any(target == f for f in froms):
+            return False
+
+    if "from_domain" in rule_match:
+        domain = rule_match["from_domain"].lower().lstrip("@")
+        if not any(f.endswith("@" + domain) or f.endswith("." + domain) for f in froms):
+            return False
+
+    if "from_regex" in rule_match:
+        pat = rule_match["from_regex"]
+        if not any(re.search(pat, f, re.IGNORECASE) for f in froms):
+            return False
+
+    if "subject" in rule_match:
+        if rule_match["subject"].lower() not in subject.lower():
+            return False
+
+    if "subject_regex" in rule_match:
+        if not re.search(rule_match["subject_regex"], subject, re.IGNORECASE):
+            return False
+
+    return True
+
+
+def find_rule(rules: list, email: dict) -> dict | None:
+    for rule in rules:
+        if matches_rule(rule.get("match", {}), email):
+            return rule
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Output path helpers
+# ---------------------------------------------------------------------------
+
+def _sanitize(s: str, max_len: int = 60) -> str:
+    return re.sub(r"[^\w\s-]", "", s).strip().replace(" ", "_")[:max_len]
+
+
+def make_output_path(out_dir: Path, email: dict, ext: str, label: str = "") -> Path:
+    received = email.get("receivedAt", "")
+    try:
+        dt = datetime.fromisoformat(received.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        dt = datetime.now(timezone.utc)
+
+    date_str = dt.strftime("%Y-%m-%d")
+    month_str = dt.strftime("%Y-%m")
+    subject_slug = _sanitize(email.get("subject", "email"))
+    stem = f"{date_str}_{subject_slug}" + (f"_{label}" if label else "")
+
+    folder = out_dir / month_str
+    folder.mkdir(parents=True, exist_ok=True)
+
+    # Avoid overwriting existing files
+    path = folder / f"{stem}{ext}"
+    counter = 1
+    while path.exists():
+        path = folder / f"{stem}_{counter}{ext}"
+        counter += 1
+    return path
+
+
+def _ext_for_mime(mime: str) -> str:
+    return {
+        "application/pdf": ".pdf",
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "text/html": ".html",
+        "text/plain": ".txt",
+    }.get(mime.split(";")[0].strip(), ".bin")
+
+
+# Magic-byte signatures for formats that servers commonly mis-label as octet-stream.
+_MAGIC = [
+    (b"%PDF", ".pdf"),
+    (b"\x89PNG", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF8", ".gif"),
+    (b"PK\x03\x04", ".zip"),
+]
+
+
+def _ext_from_content(data: bytes, fallback: str) -> str:
+    for magic, ext in _MAGIC:
+        if data[:len(magic)] == magic:
+            return ext
+    return fallback
+
+
+# ---------------------------------------------------------------------------
+# Link extraction (shared by fetch_link and screenshot_link)
+# ---------------------------------------------------------------------------
+
+def extract_links(email: dict, pattern: str | None) -> list[str]:
+    body_values = email.get("bodyValues", {})
+    links = []
+
+    for part in email.get("htmlBody", []):
+        part_id = part.get("partId")
+        if part_id and part_id in body_values:
+            soup = BeautifulSoup(body_values[part_id]["value"], "lxml")
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if not href.startswith("http"):
+                    continue
+                if pattern is None or re.search(pattern, href):
+                    links.append(href)
+
+    return links
+
+
+# ---------------------------------------------------------------------------
+# Playwright PDF helpers
+# ---------------------------------------------------------------------------
+
+def _html_to_pdf(html: str, path: Path):
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        page.set_content(html, wait_until="networkidle")
+        page.pdf(path=str(path), format="A4", print_background=True)
+        browser.close()
+
+
+def _url_to_pdf(url: str, path: Path):
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        page.goto(url, wait_until="networkidle", timeout=30000)
+        page.pdf(path=str(path), format="A4", print_background=True)
+        browser.close()
+
+
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+
+def _get_body(email: dict, part: str) -> str | None:
+    """Return the first body value for 'html' or 'text' part, or None."""
+    body_values = email.get("bodyValues", {})
+    key = "htmlBody" if part == "html" else "textBody"
+    for p in email.get(key, []):
+        pid = p.get("partId")
+        if pid and pid in body_values:
+            return body_values[pid]["value"]
+    return None
+
+
+def action_html(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+    """Print an email body part to PDF. Defaults to the HTML body; use body_part: text to use the plain-text part instead."""
+    opts = rule.get("options", {})
+    body_part = opts.get("body_part", "html")
+    content = _get_body(email, body_part)
+    if content is None:
+        print(f"  [!] No {body_part} body found")
+        return
+    path = make_output_path(out_dir, email, ".pdf")
+    _html_to_pdf(content, path)
+    print(f"  -> {path}")
+
+
+def action_text(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+    """Save an email body part as plain text. Defaults to the text body; use body_part: html to use the HTML part instead."""
+    opts = rule.get("options", {})
+    body_part = opts.get("body_part", "text")
+    content = _get_body(email, body_part)
+    if content is None:
+        print(f"  [!] No {body_part} body found")
+        return
+    path = make_output_path(out_dir, email, ".txt")
+    path.write_text(content, encoding="utf-8")
+    print(f"  -> {path}")
+
+
+def action_save_attachment(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+    opts = rule.get("options", {})
+    allowed_types = opts.get("mime_types")  # None = accept all
+
+    attachments = email.get("attachments", [])
+    if not attachments:
+        print(f"  [!] No attachments")
+        return
+
+    saved = 0
+    for att in attachments:
+        mime = att.get("type", "")
+        if allowed_types and mime not in allowed_types:
+            continue
+
+        blob_id = att.get("blobId")
+        att_name = att.get("name") or "attachment"
+        ext = Path(att_name).suffix or _ext_for_mime(mime)
+        label = Path(att_name).stem if len(attachments) > 1 else ""
+
+        data = client.download_blob(blob_id, att_name, mime)
+        path = make_output_path(out_dir, email, ext, label=label)
+        path.write_bytes(data)
+        print(f"  -> {path}  ({len(data):,} bytes)")
+        saved += 1
+
+    if saved == 0:
+        print(f"  [!] No attachments matched filter {allowed_types}")
+
+
+def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+    opts = rule.get("options", {})
+    links = extract_links(email, opts.get("link_pattern"))
+    if not links:
+        print(f"  [!] No matching links found")
+        return
+
+    url = links[0]
+    resp = requests.get(url, timeout=30, allow_redirects=True)
+    resp.raise_for_status()
+
+    ext = _ext_from_content(resp.content, _ext_for_mime(resp.headers.get("Content-Type", "")))
+
+    if ext in (".html", ".bin") and resp.content[:15].lstrip().startswith(b"<"):
+        # HTML response — print to PDF via Playwright using the final (redirected) URL
+        final_url = resp.url
+        path = make_output_path(out_dir, email, ".pdf")
+        _url_to_pdf(final_url, path)
+        print(f"  -> {path}  [{final_url}]")
+    else:
+        path = make_output_path(out_dir, email, ext)
+        path.write_bytes(resp.content)
+        print(f"  -> {path}  ({len(resp.content):,} bytes)  [{url}]")
+
+
+def action_screenshot_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+    opts = rule.get("options", {})
+    links = extract_links(email, opts.get("link_pattern"))
+    if not links:
+        print(f"  [!] No matching links found")
+        return
+
+    url = links[0]
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("  [!] Playwright not installed: pip install playwright && playwright install chromium")
+        return
+
+    path = make_output_path(out_dir, email, ".png")
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(url, wait_until="networkidle", timeout=30000)
+        page.screenshot(path=str(path), full_page=True)
+        browser.close()
+
+    print(f"  -> {path}  [{url}]")
+
+
+ACTIONS = {
+    "html": action_html,
+    "text": action_text,
+    "save_attachment": action_save_attachment,
+    "fetch_link": action_fetch_link,
+    "screenshot_link": action_screenshot_link,
+}
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Download receipts from Fastmail via JMAP")
+    parser.add_argument("--token", default=os.environ.get("FASTMAIL_TOKEN"),
+                        help="Fastmail API token (or set FASTMAIL_TOKEN env var)")
+    parser.add_argument("--folder", default="Receipts",
+                        help="Mailbox folder name (default: Receipts)")
+    parser.add_argument("--after", required=True,
+                        help="Start date inclusive, YYYY-MM-DD")
+    parser.add_argument("--before", required=True,
+                        help="End date exclusive, YYYY-MM-DD")
+    parser.add_argument("--rules", default="rules.yaml",
+                        help="Path to rules YAML file (default: rules.yaml)")
+    parser.add_argument("--out", default="./out",
+                        help="Output directory (default: ./out)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print what would be done without saving files")
+    args = parser.parse_args()
+
+    if not args.token:
+        print("Error: provide --token or set FASTMAIL_TOKEN", file=sys.stderr)
+        sys.exit(1)
+
+    after = datetime.strptime(args.after, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    before = datetime.strptime(args.before, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    out_dir = Path(args.out)
+
+    with open(args.rules) as f:
+        config = yaml.safe_load(f)
+    rules = config.get("rules", [])
+
+    print(f"Connecting to Fastmail JMAP…")
+    client = JMAPClient(args.token)
+    client.connect()
+    print(f"Account: {client.account_id}")
+
+    print(f"Finding mailbox '{args.folder}'…")
+    mailbox_id = find_mailbox(client, args.folder)
+
+    print(f"Fetching emails {args.after} → {args.before}…")
+    emails = fetch_emails(client, mailbox_id, after, before)
+    print(f"Found {len(emails)} email(s).\n")
+
+    for email in emails:
+        subject = email.get("subject", "(no subject)")
+        received = email.get("receivedAt", "")[:10]
+        froms = email.get("from", [])
+        from_str = froms[0].get("email", "?") if froms else "?"
+
+        rule = find_rule(rules, email)
+        if rule is None:
+            print(f"[SKIP]  {received}  {from_str}  |  {subject}")
+            continue
+
+        action_name = rule.get("action", "text")
+        rule_name = rule.get("name", action_name)
+        print(f"[{action_name.upper()}]  {received}  {from_str}  |  {subject}  (rule: {rule_name})")
+
+        if args.dry_run:
+            continue
+
+        action_fn = ACTIONS.get(action_name)
+        if action_fn is None:
+            print(f"  [!] Unknown action '{action_name}'")
+            continue
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            action_fn(client, email, rule, out_dir)
+        except Exception as exc:
+            print(f"  [!] {exc}")
+
+
+if __name__ == "__main__":
+    main()
