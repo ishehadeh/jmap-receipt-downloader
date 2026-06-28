@@ -103,6 +103,15 @@ class TestMatchesRule:
         rule = {"from_domain": "other.com", "subject": "Welcome"}
         assert not R.matches_rule(rule, EMAIL_BILLING)
 
+    def test_invalid_from_regex_does_not_raise(self):
+        # A malformed regex must not propagate re.error — treat as no-match
+        result = R.matches_rule({"from_regex": "(unclosed"}, EMAIL_BILLING)
+        assert result is False
+
+    def test_invalid_subject_regex_does_not_raise(self):
+        result = R.matches_rule({"subject_regex": "[invalid"}, EMAIL_BILLING)
+        assert result is False
+
     # Edge cases
     def test_missing_subject_key(self):
         email = {"from": [{"email": "billing@example.com"}]}

@@ -149,7 +149,10 @@ def matches_rule(rule_match: dict, email: dict) -> bool:
 
     if "from_regex" in rule_match:
         pat = rule_match["from_regex"]
-        if not any(re.search(pat, f, re.IGNORECASE) for f in froms):
+        try:
+            if not any(re.search(pat, f, re.IGNORECASE) for f in froms):
+                return False
+        except re.error:
             return False
 
     if "subject" in rule_match:
@@ -157,7 +160,10 @@ def matches_rule(rule_match: dict, email: dict) -> bool:
             return False
 
     if "subject_regex" in rule_match:
-        if not re.search(rule_match["subject_regex"], subject, re.IGNORECASE):
+        try:
+            if not re.search(rule_match["subject_regex"], subject, re.IGNORECASE):
+                return False
+        except re.error:
             return False
 
     return True
