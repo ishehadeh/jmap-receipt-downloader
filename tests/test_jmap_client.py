@@ -104,3 +104,68 @@ class TestFetchEmails:
         # With _limit=2 and total=3 emails, fetch_emails must make two JMAP calls
         result = R.fetch_emails(jmap_client, "mb-receipts", self._after, self._before, _limit=2)
         assert len(result) == len(EMAIL_FIXTURES)
+
+
+def test_pagination_works_when_total_absent():
+    """fetch_emails must page through results even when server omits 'total'.
+
+    The server here deliberately omits 'total' from Email/query responses and
+    serves Email/get with the exact IDs from the query page (not a catch-all).
+    Without calculateTotal:True in the query, fetch_emails would see total=0
+    and stop after the first page, returning only 2 of the 3 emails.
+    """
+    import json
+    from pytest_httpserver import HTTPServer
+    from werkzeug.wrappers import Request, Response
+    from tests.conftest import EMAIL_FIXTURES, ACCOUNT_ID
+
+    # Track which query IDs each Email/get call receives so we can resolve #ids
+    _last_query_ids: list = []
+
+    def api_handler(request: Request) -> Response:
+        nonlocal _last_query_ids
+        body = request.get_json()
+        responses = []
+        for method_name, params, tag in body.get("methodCalls", []):
+            if method_name == "Email/query":
+                position = params.get("position", 0)
+                limit = params.get("limit", 50)
+                all_ids = list(EMAIL_FIXTURES.keys())
+                page_ids = all_ids[position:position + limit]
+                _last_query_ids = page_ids
+                query_result: dict = {
+                    "accountId": ACCOUNT_ID,
+                    "ids": page_ids,
+                }
+                # Only include "total" when the client explicitly requests it
+                if params.get("calculateTotal"):
+                    query_result["total"] = len(all_ids)
+                responses.append(["Email/query", query_result, tag])
+            elif method_name == "Email/get":
+                # Resolve the #ids back-reference using the last query page
+                ids = params.get("ids") if params.get("ids") is not None else _last_query_ids
+                responses.append(["Email/get", {
+                    "accountId": ACCOUNT_ID,
+                    "list": [EMAIL_FIXTURES[i] for i in ids if i in EMAIL_FIXTURES],
+                }, tag])
+            else:
+                responses.append(["error", {"type": "unknownMethod"}, tag])
+        return Response(json.dumps({"methodResponses": responses}), content_type="application/json")
+
+    with HTTPServer(host="127.0.0.1") as server:
+        base = server.url_for("").rstrip("/")
+        server.expect_request("/jmap/session", method="GET").respond_with_json({
+            "primaryAccounts": {"urn:ietf:params:jmap:mail": ACCOUNT_ID},
+            "apiUrl": f"{base}/jmap/api",
+            "downloadUrl": f"{base}/download/{{blobId}}",
+        })
+        server.expect_request("/jmap/api", method="POST").respond_with_handler(api_handler)
+
+        client = R.JMAPClient(token="test", session_url=server.url_for("/jmap/session"))
+        client.connect()
+
+        after = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        before = datetime(2024, 12, 31, tzinfo=timezone.utc)
+
+        result = R.fetch_emails(client, "mb-receipts", after, before, _limit=2)
+        assert len(result) == len(EMAIL_FIXTURES)

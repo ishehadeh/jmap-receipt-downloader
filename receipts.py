@@ -92,6 +92,7 @@ def fetch_emails(client: JMAPClient, mailbox_id: str, after: datetime, before: d
                 "sort": [{"property": "receivedAt", "isAscending": True}],
                 "position": position,
                 "limit": limit,
+                "calculateTotal": True,
             }, "q0"],
             ["Email/get", {
                 "accountId": client.account_id,
