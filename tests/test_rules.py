@@ -103,14 +103,15 @@ class TestMatchesRule:
         rule = {"from_domain": "other.com", "subject": "Welcome"}
         assert not R.matches_rule(rule, EMAIL_BILLING)
 
-    def test_invalid_from_regex_does_not_raise(self):
-        # A malformed regex must not propagate re.error — treat as no-match
+    def test_invalid_from_regex_does_not_raise(self, capsys):
         result = R.matches_rule({"from_regex": "(unclosed"}, EMAIL_BILLING)
         assert result is False
+        assert "Invalid from_regex" in capsys.readouterr().err
 
-    def test_invalid_subject_regex_does_not_raise(self):
+    def test_invalid_subject_regex_does_not_raise(self, capsys):
         result = R.matches_rule({"subject_regex": "[invalid"}, EMAIL_BILLING)
         assert result is False
+        assert "Invalid subject_regex" in capsys.readouterr().err
 
     # Edge cases
     def test_missing_subject_key(self):
