@@ -206,6 +206,27 @@ class TestActionFetchLink:
         R.action_fetch_link(jmap_client, email, {"options": {}}, tmp_path, _session=req_lib.Session())
         assert captured == [url]
 
+    def test_connection_error_falls_back_to_playwright(self, jmap_client, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        import requests as req_lib
+
+        captured = []
+
+        def fake_url_to_pdf(url, path):
+            captured.append(url)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"%PDF fake")
+
+        monkeypatch.setattr(R, "_url_to_pdf", fake_url_to_pdf)
+
+        session = MagicMock()
+        session.get.side_effect = req_lib.ConnectionError("connection refused")
+
+        url = "http://example.com/receipt"
+        email = _with_link(url)
+        R.action_fetch_link(jmap_client, email, {"options": {}}, tmp_path, _session=session)
+        assert len(captured) == 1
+
     def test_no_links_prints_warning(self, jmap_client, tmp_path, capsys):
         email = _email()
         R.action_fetch_link(jmap_client, email, {"options": {}}, tmp_path)

@@ -389,7 +389,7 @@ def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path
             path.write_bytes(resp.content)
             print(f"  -> {path}  ({len(resp.content):,} bytes)  [{url}]")
 
-    except requests.HTTPError:
+    except requests.RequestException:
         # Server rejected the plain HTTP request (e.g. 406) — fall back to Playwright
         path = make_output_path(out_dir, email, ".pdf")
         _url_to_pdf(url, path)
