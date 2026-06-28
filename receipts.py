@@ -386,7 +386,8 @@ def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path
 
         ext = _ext_from_content(resp.content, _ext_for_mime(resp.headers.get("Content-Type", "")))
 
-        if ext in (".html", ".bin") and resp.content[:15].lstrip().startswith(b"<"):
+        _sniff = resp.content[:18].lstrip(b" \t\n\r\xef\xbb\xbf")
+        if ext in (".html", ".bin") and _sniff.startswith(b"<"):
             # HTML response — print to PDF via Playwright using the final (redirected) URL
             path = make_output_path(out_dir, email, ".pdf")
             _url_to_pdf(resp.url, path)

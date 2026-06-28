@@ -206,6 +206,33 @@ class TestActionFetchLink:
         R.action_fetch_link(jmap_client, email, {"options": {}}, tmp_path, _session=req_lib.Session())
         assert captured == [url]
 
+    def test_bom_prefixed_html_calls_url_to_pdf(self, jmap_client, tmp_path, monkeypatch):
+        """HTML with UTF-8 BOM must be rendered via Playwright, not saved as raw bytes."""
+        from unittest.mock import MagicMock
+
+        captured = []
+
+        def fake_url_to_pdf(url, path):
+            captured.append(url)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"%PDF fake")
+
+        monkeypatch.setattr(R, "_url_to_pdf", fake_url_to_pdf)
+
+        bom_html = b"\xef\xbb\xbf<!DOCTYPE html><html><body><p>Receipt</p></body></html>"
+        mock_resp = MagicMock()
+        mock_resp.content = bom_html
+        mock_resp.headers = {"Content-Type": "text/html; charset=utf-8"}
+        mock_resp.url = "http://receipts.example.com/view/abc"
+        mock_resp.raise_for_status.return_value = None
+
+        session = MagicMock()
+        session.get.return_value = mock_resp
+
+        email = _with_link("http://receipts.example.com/view/abc")
+        R.action_fetch_link(jmap_client, email, {"options": {}}, tmp_path, _session=session)
+        assert len(captured) == 1, "Expected _url_to_pdf to be called for BOM-prefixed HTML"
+
     def test_connection_error_falls_back_to_playwright(self, jmap_client, tmp_path, monkeypatch):
         from unittest.mock import MagicMock
         import requests as req_lib
