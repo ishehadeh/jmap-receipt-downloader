@@ -22,8 +22,9 @@ JMAP_USING = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"]
 # ---------------------------------------------------------------------------
 
 class JMAPClient:
-    def __init__(self, token: str):
+    def __init__(self, token: str, session_url: str = JMAP_SESSION_URL):
         self.token = token
+        self._session_url = session_url
         self.account_id: str | None = None
         self.api_url: str | None = None
         self._download_url_template: str | None = None
@@ -31,7 +32,7 @@ class JMAPClient:
         self._http.headers["Authorization"] = f"Bearer {token}"
 
     def connect(self):
-        resp = self._http.get(JMAP_SESSION_URL)
+        resp = self._http.get(self._session_url)
         resp.raise_for_status()
         data = resp.json()
         self.account_id = data["primaryAccounts"]["urn:ietf:params:jmap:mail"]
@@ -72,7 +73,7 @@ def find_mailbox(client: JMAPClient, name: str) -> str:
     raise ValueError(f"Mailbox '{name}' not found. Available: {available}")
 
 
-def fetch_emails(client: JMAPClient, mailbox_id: str, after: datetime, before: datetime) -> list:
+def fetch_emails(client: JMAPClient, mailbox_id: str, after: datetime, before: datetime, _limit: int = 50) -> list:
     filter_ = {
         "inMailbox": mailbox_id,
         "after": after.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -81,7 +82,7 @@ def fetch_emails(client: JMAPClient, mailbox_id: str, after: datetime, before: d
 
     emails = []
     position = 0
-    limit = 50
+    limit = _limit
 
     while True:
         result = client.call([
@@ -360,7 +361,7 @@ def action_save_attachment(client: JMAPClient, email: dict, rule: dict, out_dir:
         print(f"  [!] No attachments matched filter {allowed_types}")
 
 
-def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path, _session: requests.Session | None = None):
     opts = rule.get("options", {})
     links = extract_links(email, opts.get("link_pattern"))
     if not links:
@@ -368,8 +369,9 @@ def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path
         return
 
     url = links[0]
+    session = _session or requests.Session()
     try:
-        resp = requests.get(url, timeout=30, allow_redirects=True)
+        resp = session.get(url, timeout=30, allow_redirects=True)
         resp.raise_for_status()
 
         ext = _ext_from_content(resp.content, _ext_for_mime(resp.headers.get("Content-Type", "")))

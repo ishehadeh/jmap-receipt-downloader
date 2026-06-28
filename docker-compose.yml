@@ -1,0 +1,16 @@
+services:
+  receipts:
+    build: .
+    environment:
+      - FASTMAIL_TOKEN
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    volumes:
+      - ./out:/app/out
+      - ./rules.yaml:/app/rules.yaml:ro
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
