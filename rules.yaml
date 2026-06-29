@@ -210,3 +210,9 @@ rules:
     match:
       from_domain: reservations.choicehotels.com
     action: html
+
+  # ── Link (payment service) ────────────────────────────────────────────────
+  - name: Link payment notifications
+    match:
+      from_domain: link.com
+    action: html
