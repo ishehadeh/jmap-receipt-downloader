@@ -2,6 +2,7 @@
 """Download receipts from a Fastmail folder via JMAP."""
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -315,42 +316,44 @@ def _get_body(email: dict, part: str) -> str | None:
     return None
 
 
-def action_html(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+def action_html(client: JMAPClient, email: dict, rule: dict, out_dir: Path) -> list[Path]:
     """Print an email body part to PDF. Defaults to the HTML body; use body_part: text to use the plain-text part instead."""
     opts = rule.get("options", {})
     body_part = opts.get("body_part", "html")
     content = _get_body(email, body_part)
     if content is None:
         print(f"  [!] No {body_part} body found")
-        return
+        return []
     path = make_output_path(out_dir, email, ".pdf")
     _html_to_pdf(content, path)
     print(f"  -> {path}")
+    return [path]
 
 
-def action_text(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+def action_text(client: JMAPClient, email: dict, rule: dict, out_dir: Path) -> list[Path]:
     """Save an email body part as plain text. Defaults to the text body; use body_part: html to use the HTML part instead."""
     opts = rule.get("options", {})
     body_part = opts.get("body_part", "text")
     content = _get_body(email, body_part)
     if content is None:
         print(f"  [!] No {body_part} body found")
-        return
+        return []
     path = make_output_path(out_dir, email, ".txt")
     path.write_text(content, encoding="utf-8")
     print(f"  -> {path}")
+    return [path]
 
 
-def action_save_attachment(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+def action_save_attachment(client: JMAPClient, email: dict, rule: dict, out_dir: Path) -> list[Path]:
     opts = rule.get("options", {})
     allowed_types = opts.get("mime_types")  # None = accept all
 
     attachments = email.get("attachments", [])
     if not attachments:
         print(f"  [!] No attachments")
-        return
+        return []
 
-    saved = 0
+    paths = []
     for att in attachments:
         mime = att.get("type", "")
         if allowed_types and mime not in allowed_types:
@@ -368,18 +371,19 @@ def action_save_attachment(client: JMAPClient, email: dict, rule: dict, out_dir:
         path = make_output_path(out_dir, email, ext, label=label)
         path.write_bytes(data)
         print(f"  -> {path}  ({len(data):,} bytes)")
-        saved += 1
+        paths.append(path)
 
-    if saved == 0:
+    if not paths:
         print(f"  [!] No attachments matched filter {allowed_types}")
+    return paths
 
 
-def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path, _session: requests.Session | None = None):
+def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path, _session: requests.Session | None = None) -> list[Path]:
     opts = rule.get("options", {})
     links = extract_links(email, opts.get("link_pattern"))
     if not links:
         print(f"  [!] No matching links found")
-        return
+        return []
 
     url = links[0]
     session = _session or requests.Session()
@@ -391,7 +395,6 @@ def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path
 
         _sniff = resp.content[:18].lstrip(b" \t\n\r\xef\xbb\xbf")
         if ext in (".html", ".bin") and _sniff.startswith(b"<"):
-            # HTML response — print to PDF via Playwright using the final (redirected) URL
             path = make_output_path(out_dir, email, ".pdf")
             _url_to_pdf(resp.url, path)
             print(f"  -> {path}  [{resp.url}]")
@@ -401,18 +404,19 @@ def action_fetch_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path
             print(f"  -> {path}  ({len(resp.content):,} bytes)  [{url}]")
 
     except requests.RequestException:
-        # Server rejected the plain HTTP request (e.g. 406) — fall back to Playwright
         path = make_output_path(out_dir, email, ".pdf")
         _url_to_pdf(url, path)
         print(f"  -> {path}  [browser]  [{url}]")
 
+    return [path]
 
-def action_screenshot_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path):
+
+def action_screenshot_link(client: JMAPClient, email: dict, rule: dict, out_dir: Path) -> list[Path]:
     opts = rule.get("options", {})
     links = extract_links(email, opts.get("link_pattern"))
     if not links:
         print(f"  [!] No matching links found")
-        return
+        return []
 
     url = links[0]
 
@@ -420,7 +424,7 @@ def action_screenshot_link(client: JMAPClient, email: dict, rule: dict, out_dir:
         from playwright.sync_api import sync_playwright
     except ImportError:
         print("  [!] Playwright not installed: pip install playwright && playwright install chromium")
-        return
+        return []
 
     path = make_output_path(out_dir, email, ".png")
     with sync_playwright() as p:
@@ -431,6 +435,7 @@ def action_screenshot_link(client: JMAPClient, email: dict, rule: dict, out_dir:
         browser.close()
 
     print(f"  -> {path}  [{url}]")
+    return [path]
 
 
 ACTIONS = {
@@ -440,6 +445,45 @@ ACTIONS = {
     "fetch_link": action_fetch_link,
     "screenshot_link": action_screenshot_link,
 }
+
+
+# ---------------------------------------------------------------------------
+# Manifest (download tracking)
+# ---------------------------------------------------------------------------
+
+def load_manifest(out_dir: Path) -> dict:
+    path = out_dir / "manifest.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_manifest(out_dir: Path, manifest: dict):
+    path = out_dir / "manifest.json"
+    tmp = path.with_suffix(".json.tmp")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def record_download(manifest: dict, email: dict, rule: dict, action: str,
+                    output_files: list[Path], receipts_dir: Path) -> dict:
+    froms = email.get("from", [])
+    entry = {
+        "email_id": email["id"],
+        "subject": email.get("subject", ""),
+        "from": froms[0].get("email", "") if froms else "",
+        "received_at": email.get("receivedAt", ""),
+        "rule_name": rule.get("name", action),
+        "action": action,
+        "output_files": [str(p.relative_to(receipts_dir)) for p in output_files],
+        "downloaded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    manifest[email["id"]] = entry
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +506,8 @@ def main():
                         help="Output directory (default: ./out)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would be done without saving files")
+    parser.add_argument("--force", action="store_true",
+                        help="Reprocess all emails regardless of manifest")
     args = parser.parse_args()
 
     if not args.token:
@@ -488,11 +534,18 @@ def main():
     emails = fetch_emails(client, mailbox_id, after, before)
     print(f"Found {len(emails)} email(s).\n")
 
+    manifest = load_manifest(out_dir)
+    receipts_dir = out_dir / "receipts"
+
     for email in emails:
         subject = email.get("subject", "(no subject)")
         received = email.get("receivedAt", "")[:10]
         froms = email.get("from", [])
         from_str = froms[0].get("email", "?") if froms else "?"
+
+        if not args.force and email["id"] in manifest:
+            print(f"[SEEN]  {received}  {from_str}  |  {subject}")
+            continue
 
         rule = find_rule(rules, email)
         if rule is None:
@@ -511,9 +564,12 @@ def main():
             print(f"  [!] Unknown action '{action_name}'")
             continue
 
-        out_dir.mkdir(parents=True, exist_ok=True)
+        receipts_dir.mkdir(parents=True, exist_ok=True)
         try:
-            action_fn(client, email, rule, out_dir)
+            output_files = action_fn(client, email, rule, receipts_dir)
+            if output_files:
+                record_download(manifest, email, rule, action_name, output_files, receipts_dir)
+                save_manifest(out_dir, manifest)
         except Exception as exc:
             print(f"  [!] {exc}")
 
