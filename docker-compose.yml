@@ -1,6 +1,7 @@
 services:
   receipts:
     build: .
+    env_file: .env
     environment:
       - FASTMAIL_TOKEN
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
