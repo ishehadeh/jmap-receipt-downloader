@@ -12,6 +12,7 @@
 # action values:
 #   html             — render an email body part to PDF (default: htmlBody)
 #   text             — save an email body part as .txt (default: textBody)
+#   text_pdf         — wrap the plain-text body in HTML and print to PDF (default: textBody)
 #   save_attachment  — download attached files (use mime_types to filter)
 #   fetch_link       — HTTP-GET a URL found in the email body; HTML responses are printed to PDF
 #   screenshot_link  — full-page Playwright screenshot of a URL in the email body
@@ -113,7 +114,7 @@ rules:
   - name: Ally Bank transfer confirmations
     match:
       from_domain: transfers.ally.com
-    action: text
+    action: text_pdf
 
   # ── Venmo ─────────────────────────────────────────────────────────────────
   - name: Venmo payment notifications
@@ -133,7 +134,7 @@ rules:
   - name: Zelle payment alerts (PNC)
     match:
       from: pncalerts@pnc.com
-    action: text
+    action: text_pdf
 
   # ── BGE ───────────────────────────────────────────────────────────────────
   - name: BGE payment confirmations

@@ -14,6 +14,19 @@ from tests.conftest import FAKE_PDF
 
 
 # ---------------------------------------------------------------------------
+# Chromium detection (needed by Playwright-dependent tests)
+# ---------------------------------------------------------------------------
+
+def _chromium_available() -> bool:
+    if shutil.which("chromium") or shutil.which("chromium-browser"):
+        return True
+    browsers = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/ms-playwright"))
+    return any(browsers.glob("chromium-*/chrome-linux/chrome"))
+
+_has_chromium = _chromium_available()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -85,6 +98,45 @@ class TestActionText:
         R.action_text(None, email, {"options": {}}, tmp_path)
         files = list(tmp_path.rglob("*.txt"))
         assert files[0].read_text(encoding="utf-8") == "Héllo wörld"
+
+
+# ---------------------------------------------------------------------------
+# action_text_pdf
+# ---------------------------------------------------------------------------
+
+@pytest.mark.playwright
+@pytest.mark.skipif(not _has_chromium, reason="Chromium not installed; run inside Docker")
+class TestActionTextPdf:
+    def test_produces_pdf(self, tmp_path):
+        email = _with_text("Hello receipt text")
+        R.action_text_pdf(None, email, {"options": {}}, tmp_path)
+        files = list(tmp_path.rglob("*.pdf"))
+        assert len(files) == 1
+        assert files[0].read_bytes().startswith(b"%PDF")
+
+    def test_html_entities_escaped(self, tmp_path):
+        email = _with_text("<script>alert('xss')</script>")
+        R.action_text_pdf(None, email, {"options": {}}, tmp_path)
+        files = list(tmp_path.rglob("*.pdf"))
+        assert len(files) == 1
+
+    def test_uses_html_body_when_body_part_html(self, tmp_path):
+        email = _with_html("<b>HTML content</b>")
+        R.action_text_pdf(None, email, {"options": {"body_part": "html"}}, tmp_path)
+        files = list(tmp_path.rglob("*.pdf"))
+        assert len(files) == 1
+
+    def test_no_body_prints_warning_and_writes_nothing(self, tmp_path, capsys):
+        email = _email()
+        R.action_text_pdf(None, email, {"options": {}}, tmp_path)
+        assert "[!]" in capsys.readouterr().out
+        assert not list(tmp_path.rglob("*.pdf"))
+
+    def test_output_path_in_date_subfolder(self, tmp_path):
+        email = _with_text("content")
+        R.action_text_pdf(None, email, {"options": {}}, tmp_path)
+        files = list(tmp_path.rglob("*.pdf"))
+        assert files[0].parent.name == "2024-03"
 
 
 # ---------------------------------------------------------------------------
@@ -289,16 +341,6 @@ class TestActionFetchLink:
 # ---------------------------------------------------------------------------
 # action_html / action_screenshot_link (Playwright — skipped by default)
 # ---------------------------------------------------------------------------
-
-def _chromium_available() -> bool:
-    if shutil.which("chromium") or shutil.which("chromium-browser"):
-        return True
-    # Playwright manages its own Chromium under PLAYWRIGHT_BROWSERS_PATH
-    browsers = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/ms-playwright"))
-    return any(browsers.glob("chromium-*/chrome-linux/chrome"))
-
-_has_chromium = _chromium_available()
-
 
 @pytest.mark.playwright
 @pytest.mark.skipif(not _has_chromium, reason="Chromium not installed; run inside Docker")

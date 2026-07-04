@@ -344,6 +344,27 @@ def action_text(client: JMAPClient, email: dict, rule: dict, out_dir: Path) -> l
     return [path]
 
 
+def action_text_pdf(client: JMAPClient, email: dict, rule: dict, out_dir: Path) -> list[Path]:
+    """Wrap the plain-text body in minimal HTML and print it to PDF. Defaults to the text body; use body_part: html to use the HTML part instead."""
+    opts = rule.get("options", {})
+    body_part = opts.get("body_part", "text")
+    content = _get_body(email, body_part)
+    if content is None:
+        print(f"  [!] No {body_part} body found")
+        return []
+    import html as html_mod
+    escaped = html_mod.escape(content)
+    wrapped = (
+        "<html><head><meta charset='utf-8'>"
+        "<style>body{font-family:monospace;white-space:pre-wrap;margin:2em;font-size:12px;}</style>"
+        "</head><body>" + escaped + "</body></html>"
+    )
+    path = make_output_path(out_dir, email, ".pdf")
+    _html_to_pdf(wrapped, path)
+    print(f"  -> {path}")
+    return [path]
+
+
 def action_save_attachment(client: JMAPClient, email: dict, rule: dict, out_dir: Path) -> list[Path]:
     opts = rule.get("options", {})
     allowed_types = opts.get("mime_types")  # None = accept all
@@ -441,6 +462,7 @@ def action_screenshot_link(client: JMAPClient, email: dict, rule: dict, out_dir:
 ACTIONS = {
     "html": action_html,
     "text": action_text,
+    "text_pdf": action_text_pdf,
     "save_attachment": action_save_attachment,
     "fetch_link": action_fetch_link,
     "screenshot_link": action_screenshot_link,
