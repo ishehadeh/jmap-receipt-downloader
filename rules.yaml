@@ -42,6 +42,13 @@ rules:
     options:
       link_pattern: "stripe"
 
+  - name: Anomaly receipts
+    match:
+      from: invoice+statements@anoma.ly
+    action: fetch_link
+    options:
+      link_pattern: "dashboard\\.stripe\\.com/receipts"
+
   - name: Stripe-billed vendors (Deep Infra, Obsidian, Anomaly)
     match:
       from_regex: "^(invoice\\+statements|receipts)\\+?[^@]*@stripe\\.com$"
