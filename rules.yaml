@@ -114,7 +114,7 @@ rules:
   - name: Ally Bank transfer confirmations
     match:
       from_domain: transfers.ally.com
-    action: text_pdf
+    action: html
 
   # ── Venmo ─────────────────────────────────────────────────────────────────
   - name: Venmo payment notifications
@@ -134,7 +134,7 @@ rules:
   - name: Zelle payment alerts (PNC)
     match:
       from: pncalerts@pnc.com
-    action: text_pdf
+    action: html
 
   # ── BGE ───────────────────────────────────────────────────────────────────
   - name: BGE payment confirmations

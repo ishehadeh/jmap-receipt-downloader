@@ -336,8 +336,7 @@ def action_text(client: JMAPClient, email: dict, rule: dict, out_dir: Path) -> l
     body_part = opts.get("body_part", "text")
     content = _get_body(email, body_part)
     if content is None:
-        print(f"  [!] No {body_part} body found")
-        return []
+        raise RuntimeError(f"No {body_part} body found — cannot save as text")
     path = make_output_path(out_dir, email, ".txt")
     path.write_text(content, encoding="utf-8")
     print(f"  -> {path}")

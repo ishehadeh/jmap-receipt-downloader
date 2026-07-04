@@ -81,10 +81,10 @@ class TestActionText:
         assert len(files) == 1
         assert "<b>HTML content</b>" in files[0].read_text()
 
-    def test_no_body_prints_warning_and_writes_nothing(self, tmp_path, capsys):
+    def test_no_body_raises_error(self, tmp_path):
         email = _email()
-        R.action_text(None, email, {"options": {}}, tmp_path)
-        assert "[!]" in capsys.readouterr().out
+        with pytest.raises(RuntimeError, match="No text body found"):
+            R.action_text(None, email, {"options": {}}, tmp_path)
         assert not list(tmp_path.rglob("*.txt"))
 
     def test_output_path_in_date_subfolder(self, tmp_path):
